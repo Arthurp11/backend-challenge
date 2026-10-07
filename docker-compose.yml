@@ -40,11 +40,12 @@ services:
       postgres: { condition: service_healthy }
       sqs: { condition: service_healthy }
 
+  # Scale with `docker compose up --scale app=3`: each replica takes the next free host port in the range.
   app:
     build: .
     environment: *app-env
     ports:
-      - "${APP_HOST_PORT:-3000}:3000"
+      - "${APP_HOST_PORTS:-3000-3002}:3000"
     depends_on:
       setup: { condition: service_completed_successfully }
 

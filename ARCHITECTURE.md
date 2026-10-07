@@ -20,6 +20,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Decisão:** MiniStack (MIT, porta 4566, compatível com o SDK da AWS).
 - **Alternativa descartada:** LocalStack com token gratuito. Quem avalia precisaria criar uma conta só para rodar o projeto.
 - **Trade-off:** o MiniStack é menos usado que o LocalStack. Os comportamentos de que dependemos (FIFO, redrive para a DLQ, visibility timeout) são cobertos pelos testes de integração.
+- **Limitação descoberta:** o MiniStack guarda as filas em memória. Se o container do SQS reiniciar, as filas somem e o readiness fica `down` até alguém rodar `bun run sqs:setup` de novo. No SQS real isso não acontece. Por isso os testes de reinício derrubam as instâncias da aplicação, nunca o emulador.
 
 ### D2. Provisionamento separado do boot da aplicação
 
@@ -27,7 +28,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Decisão:** um serviço `setup` no Docker Compose roda uma vez, cria as filas e aplica as migrations. O app só sobe depois que ele termina com sucesso.
 - **Por que não no boot do app:**
   - **Migrations:** várias instâncias subindo juntas disputariam a mesma migration pendente.
-  - **Filas:** em produção, fila é infraestrutura, não responsabilidade da aplicação. Com a criação das filas fora da aplicação, como seria num Terraform, o app só precisa de permissão para escrever e ler mensagens. Se ele for comprometido, não consegue apagar filas nem mexer na DLQ..
+  - **Filas:** em produção, fila é infraestrutura, não responsabilidade da aplicação. Com a criação das filas fora da aplicação, como seria num Terraform, o app só precisa de permissão para escrever e ler mensagens. Se ele for comprometido, não consegue apagar filas nem mexer na DLQ.
 - **Idempotência:** rodar o `setup` de novo é seguro. O `CreateQueue` com atributos idênticos devolve a fila existente, e o migrator só aplica as migrations pendentes.
 - **Trade-off:** é um passo a mais no ambiente local, mas automatizado pelo Compose.
 
@@ -42,7 +43,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 
 - **Decisão:** `/health/live` não checa dependências. `/health/ready` executa `select 1` no Postgres e `GetQueueUrl` no SQS, com timeout de 2s cada; se algum falhar, responde 503.
 - **Por quê:** se o liveness dependesse do banco, uma queda do Postgres faria o orquestrador reiniciar todas as instâncias em loop, e reiniciar não conserta o banco. O readiness só tira a instância do tráfego.
-- **Detalhe:** o MikroORM 7 conecta de forma preguiçosa (só na primeira query), então o readiness executa uma query real em vez de usar `checkConnection()`. O primeiro readiness voltou database: down com o banco no ar. Investigando, vi que o MikroORM 7 só conecta na primeira query, e o `checkConnection()` não tenta conectar. Troquei por um select 1 real..
+- **Detalhe:** o primeiro readiness respondia `database: down` com o banco no ar. Investigando, vi que o MikroORM 7 só conecta na primeira query e que o `checkConnection()` não abre conexão. Por isso o readiness executa um `select 1` real.
 - **Trade-off consciente:** o README pede que o readiness dependa do SQS, e segui isso. Em produção, eu faria a API depender só do Postgres: graças ao outbox, transações continuam sendo processadas com o SQS fora, e os eventos acumulam até ele voltar. SQS fora seria um estado *degradado*, sinalizado por métrica e alerta de outbox lag, sem tirar a instância do tráfego.
 
 <!-- Próximas decisões, preenchidas a cada bloco:

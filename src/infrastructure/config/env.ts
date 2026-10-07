@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { z } from 'zod';
 
 /**
@@ -7,7 +8,8 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
-  INSTANCE_ID: z.string().default(() => `instance-${process.pid}`),
+  // Hostname first: inside containers every replica runs as PID 1, so the PID alone is not unique.
+  INSTANCE_ID: z.string().default(() => `${hostname()}-${process.pid}`),
 
   DATABASE_URL: z.string().default('postgres://wagering:wagering@localhost:5433/wagering'),
   DB_POOL_MAX: z.coerce.number().int().positive().default(20),
