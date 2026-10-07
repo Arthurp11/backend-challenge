@@ -1,0 +1,52 @@
+name: wagering
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # MiniStack: MIT-licensed SQS emulator; runs without an account/auth token (unlike LocalStack >= 2026.03).
+  sqs:
+    image: ministackorg/ministack:1.5.22
+    ports:
+      - "${SQS_HOST_PORT:-4566}:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as r; r.urlopen('http://localhost:4566/_ministack/health')\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: create queues and apply migrations before any app instance starts.
+  setup:
+    build: .
+    command: ["sh", "-c", "bun run sqs:setup && bun run migration:up"]
+    environment: &app-env
+      DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+      AWS_ENDPOINT_URL: http://sqs:4566
+    depends_on:
+      postgres: { condition: service_healthy }
+      sqs: { condition: service_healthy }
+
+  app:
+    build: .
+    environment: *app-env
+    ports:
+      - "${APP_HOST_PORT:-3000}:3000"
+    depends_on:
+      setup: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:
