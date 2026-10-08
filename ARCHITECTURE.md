@@ -79,43 +79,95 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 
 ---
 
-## 3. Invariantes: onde cada uma é garantida
+## 3. Modelo de domínio
+
+O domínio (`src/domain`) é TypeScript puro: sem Nest, sem ORM e sem relógio. Ids e horários chegam como parâmetro, o que deixa todas as regras testáveis sem banco. Toda classe tem construtor privado. A factory `create`/`from`/`open` valida a entrada de um dado novo. A `rehydrate` só reconstrói o que já está no banco, sem revalidar, porque o que foi gravado é um fato, e uma corrupção precisa ser carregada para ser detectada.
+
+As regras de negócio da seção 7 ficam numa função de domínio, `applyWagerTransaction`, chamada igualmente na primeira chegada da transação (HTTP ou SQS) e em cada nova tentativa do worker de referências.
+
+### 3.1 Máquina de estados da `WagerTransaction`
+
+```
+PENDING ──► PROCESSED | REJECTED | FAILED
+   │
+   └──► PENDING_REFERENCE ──► PENDING_REFERENCE (nova espera) | PROCESSED | REJECTED | FAILED
+```
+
+- `PROCESSED`, `REJECTED` e `FAILED` são terminais. Qualquer transição a partir deles lança `InvalidTransactionStateError`, porque é erro de programação, não caminho de negócio.
+- `PENDING` só existe em memória, dentro da transação SQL que processa o pedido. No banco aparecem apenas `PENDING_REFERENCE` e os estados terminais.
+- Cada ida para `PENDING_REFERENCE` conta uma tentativa e agenda a próxima com backoff exponencial. Esgotado o limite, a transação vira `REJECTED` com `REFERENCE_NOT_FOUND`.
+- Toda transição grava o saldo observado naquele momento (`resultBalance`). É ele que um replay idempotente devolve, nunca o saldo atual.
+
+### 3.2 Códigos de falha
+
+O provedor decide pelo código, nunca pela mensagem. Os códigos fazem parte do contrato público: posso acrescentar novos, mas nunca renomear.
+
+| Código | Quando | O que o provedor deve fazer |
+|---|---|---|
+| `INSUFFICIENT_FUNDS` | BET maior que o saldo | desistir da aposta; pode tentar outra, com novo id |
+| `REVERSAL_INSUFFICIENT_FUNDS` | ROLLBACK de um crédito (WIN ou REFUND) que o jogador já gastou | tratamento manual: o dinheiro já saiu |
+| `CURRENCY_MISMATCH` | moeda da operação diferente da moeda da wallet | corrigir o payload |
+| `PLAYER_WALLET_MISMATCH` | `playerId` diferente do dono da wallet | corrigir o payload |
+| `REFERENCE_NOT_FOUND` | a referência não chegou dentro da janela de tentativas | reenviar a referência e depois a reversão, com novo id |
+| `REFERENCE_MISMATCH` | a referência é de outro provider, player, wallet, moeda ou rodada | corrigir o payload |
+| `REFERENCE_KIND_NOT_ALLOWED` | REFUND que não aponta para BET; ROLLBACK que não aponta para BET, WIN ou REFUND; WIN ou LOSS que não aponta para BET | corrigir o payload |
+| `REFERENCE_AMOUNT_MISMATCH` | REFUND ou ROLLBACK com valor diferente da referência (reversão parcial está fora de escopo) | corrigir o payload |
+| `REFERENCE_NOT_PROCESSED` | a referência terminou `REJECTED` ou `FAILED`: não há o que reverter | desistir |
+| `ALREADY_REVERSED` | a referência já foi revertida por um REFUND ou ROLLBACK | desistir: a reversão já aconteceu |
+| `PERMANENT_PROCESSING_ERROR` | `FAILED`: erro permanente de infraestrutura, mantido para auditoria | acionar suporte |
+
+Erros de **entrada** (payload malformado, OPENING enviado por provedor, REFUND sem referência) não viram transação `REJECTED`. Eles são rejeitados antes, como payload inválido, e nada é gravado.
+
+### 3.3 Regras de referência
+
+- Uma referência é procurada por `(providerId, referenceExternalTransactionId)` e precisa ser do mesmo provider, player, wallet, moeda e rodada.
+- Direção no ledger: BET debita; OPENING, WIN e REFUND creditam; ROLLBACK faz o inverso da referência (de uma BET credita, de um WIN ou REFUND debita); LOSS não move saldo.
+- Se a referência ainda não chegou, ou se ela mesma ainda está esperando a sua referência (uma corrente), a transação espera em `PENDING_REFERENCE`.
+
+---
+
+## 4. Invariantes: onde cada uma é garantida
 
 Cada invariante é garantida **em duas camadas** (domínio e banco) e **provada por um teste**.
 
 | Invariante | Domínio | Banco (schema) | Teste |
 |---|---|---|---|
 | Dinheiro nunca é `number` | `Money` com `bigint` de centavos | | `test/unit/domain/money.test.ts` |
-| Saldo nunca negativo | | | |
+| Saldo nunca negativo | `Wallet.debit` lança `InsufficientFundsError`; `WalletLedgerEntry` recusa saldo final negativo | | `test/unit/domain/wallet.test.ts`, `apply-wager-transaction.test.ts` |
 | Uma wallet por `playerId` + `currency` | | | |
-| Toda alteração de saldo tem um lançamento no ledger | | | |
+| Toda alteração de saldo tem um lançamento no ledger | `debit` e `credit` são o único jeito de mudar o saldo, e ambos devolvem o lançamento | | `test/unit/domain/wallet.test.ts` ("the ledger rebuilds the balance") |
 | Ledger imutável (sem UPDATE/DELETE) | `WalletLedgerEntry`: campos `readonly` e `Object.freeze`, sem métodos de transição | | `test/unit/domain/wallet-ledger-entry.test.ts` |
-| No máximo um lançamento por transação por wallet | | | |
+| No máximo um lançamento por transação por wallet | `applyWagerTransaction` recusa uma transação que já está em estado terminal | | `test/unit/domain/apply-wager-transaction.test.ts` |
 | Operação idempotente (sem débito ou crédito duplicado) | | | |
-| Mesma key com payload diferente gera conflito | | | |
-| Referência revertida no máximo uma vez | | | |
+| Mesma key com payload diferente gera conflito | `payloadHash` canônico e `matchesPayload` | | `test/unit/domain/payload-hash.test.ts` |
+| Referência revertida no máximo uma vez | `ALREADY_REVERSED` quando a referência já tem uma reversão processada | | `test/unit/domain/apply-wager-transaction.test.ts` |
 | Sem lost update entre instâncias | | | |
 | Evento publicado só depois do commit | | | |
-| `wallet.balance == saldo reconstruído pelo ledger` | | | |
+| `wallet.balance == saldo reconstruído pelo ledger` | cada lançamento guarda saldo antes e depois e a versão da wallet | | `test/unit/domain/wallet.test.ts` ("the ledger rebuilds the balance") |
 
 ---
 
-## 4. Interpretações adotadas
+## 5. Interpretações adotadas
 
 Pontos em que o enunciado admite mais de uma leitura, e a leitura escolhida:
 
 - **Escala do `amount` na entrada:** o desafio diz "escala fixa de 2 casas" e também manda rejeitar "mais de 2 casas decimais", o que sugere que menos casas são aceitáveis. Aceitamos de 0 a 2 casas e normalizamos para 2 (`"25.5"` vira `"25.50"`). A resposta sempre sai com 2 casas, e o `payloadHash` usa o valor normalizado, então `"25.5"` e `"25.50"` são o mesmo pedido.
+- **Uma única reversão por referência, de qualquer tipo:** a regra 4 da seção 7 diz "uma referência não pode ser revertida duas vezes **pelo mesmo tipo** de operação". Lida ao pé da letra, ela permite um REFUND **e** um ROLLBACK da mesma BET, o que devolveria o valor duas vezes e quebraria o invariante global "não duplicar créditos". Adotei a leitura mais restrita: depois de qualquer reversão processada, uma nova tentativa recebe `ALREADY_REVERSED`. Fazer o ROLLBACK de um REFUND também não torna a BET reversível de novo.
+- **WIN e LOSS podem referenciar a BET:** o enunciado diz que o WIN "pode referenciar" a BET. Quando a referência vem, ela é validada como qualquer outra (precisa ser uma BET da mesma rodada) e, se ainda não chegou, a transação espera em `PENDING_REFERENCE`. Apliquei a mesma regra ao LOSS. Uma BET com referência é payload inválido.
+- **Valores por tipo:** BET, WIN, REFUND e ROLLBACK exigem valor maior que zero. Um "WIN de zero" deve ser enviado como LOSS, que aceita valor maior ou igual a zero e nunca move saldo.
+- **Referência que falhou:** se a referência terminou `REJECTED` ou `FAILED`, a transação dependente é rejeitada na hora com `REFERENCE_NOT_PROCESSED`, sem esperar: a referência nunca vai mudar de estado.
+- **`aggregateId` dos eventos:** todos os eventos usam a `walletId` como `aggregateId`, inclusive os de transação. A wallet é a unidade de consistência (seção 8), então os consumidores podem particionar e ordenar por ela. O `transactionId` vai dentro de `data`.
 
 <!-- Preencher conforme as regras forem implementadas. -->
 
 ---
 
-## 5. Autenticação
+## 6. Autenticação
 
 Não implementada, como o desafio permite (seção 2 do README). <!-- Detalhar o desenho com IdP e o ponto de extensão quando ele existir no código. -->
 
 ---
 
-## 6. Limitações e próximos passos
+## 7. Limitações e próximos passos
 
 <!-- Preencher no dia 3, com honestidade. -->
