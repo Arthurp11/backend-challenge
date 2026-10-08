@@ -31,7 +31,7 @@ docker compose up --build --scale app=3   # portas 3000, 3001 e 3002
 | `bun run typecheck` | checagem de tipos (TypeScript estrito) |
 | `bun run migration:up` / `migration:down` / `migration:status` | aplica, reverte uma, mostra o estado |
 | `bun run sqs:setup` | cria as filas (idempotente) |
-| `bun test` | testes de unidade |
+| `bun run test` | testes de unidade (rápidos, sem Docker) |
 | `bun run test:integration` | integração e concorrência contra Postgres e MiniStack reais |
 
 ## Portas e variáveis

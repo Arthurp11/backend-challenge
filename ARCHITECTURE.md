@@ -46,8 +46,28 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Detalhe:** o primeiro readiness respondia `database: down` com o banco no ar. Investigando, vi que o MikroORM 7 só conecta na primeira query e que o `checkConnection()` não abre conexão. Por isso o readiness executa um `select 1` real.
 - **Trade-off consciente:** o README pede que o readiness dependa do SQS, e segui isso. Em produção, eu faria a API depender só do Postgres: graças ao outbox, transações continuam sendo processadas com o SQS fora, e os eventos acumulam até ele voltar. SQS fora seria um estado *degradado*, sinalizado por métrica e alerta de outbox lag, sem tirar a instância do tráfego.
 
+### D5. Dinheiro: `bigint` em centavos no domínio, string decimal nos contratos
+
+- **Contexto:** `number` não representa valores como 0,10 de forma exata (`0.1 + 0.2 === 0.30000000000000004`), e a primeira restrição do desafio proíbe `number` para dinheiro.
+- **Decisão:**
+  - `Money` guarda um `bigint` de centavos, com escala fixa de 2 casas. Toda conta é soma ou subtração de inteiros, então não existe arredondamento.
+  - Entrada e saída são sempre strings decimais (`"25.00"`). O `toJSON()` garante que um `bigint` nunca chega a resposta, evento ou log.
+  - No banco, `numeric(20,2)` e `currency char(3)`. O driver `pg` devolve `numeric` como string, que volta ao domínio por `Money.from`, então o valor nunca passa por `number`.
+- **Validação da entrada:**
+  - Aceita até 2 casas e normaliza (`"25"` vira `"25.00"`).
+  - Rejeita o que exigiria arredondamento (`"10.005"`), notação científica, sinal, zeros à esquerda, espaços, vírgula, `NaN`, `Infinity` e mais de 18 dígitos inteiros, que não caberiam em `numeric(20,2)`.
+  - Todo `Money` nasce por uma factory que confere esse limite, então nunca existe um valor que o banco não consiga gravar.
+- **Alternativas descartadas:**
+  - `decimal.js` ou `big.js`: uma dependência a mais para algo que, com escala fixa, é aritmética de inteiros.
+  - `number` em centavos: é seguro só até 2^53 e aceita frações acidentais (meio centavo).
+  - Tipo monetário do ORM no domínio: acoplaria o domínio ao MikroORM, o que a seção 6.1 do desafio proíbe.
+- **Trade-off:** a escala fixa de 2 casas não atende moedas com 3 casas (KWD, BHD) nem cripto. Mudar isso exigiria migration e uma nova versão do contrato. Aceito porque o desafio fixa 2 casas.
+- **Multi-moeda:**
+  - Validei só o formato ISO-4217 (3 letras maiúsculas), não a lista oficial de moedas.
+  - `add`, `subtract` e `isLessThan` entre moedas diferentes lançam `CurrencyMismatchError`.
+  - `equals` só responde `false`, porque perguntar se dois valores são iguais é uma pergunta legítima, enquanto somar BRL com USD não faz sentido.
+
 <!-- Próximas decisões, preenchidas a cada bloco:
-     D5 Representação de dinheiro (Money)
      D6 ORM e mapeamento domínio ↔ persistência
      D7 Estratégia de concorrência
      D8 Idempotência e payloadHash
@@ -65,11 +85,11 @@ Cada invariante é garantida **em duas camadas** (domínio e banco) e **provada 
 
 | Invariante | Domínio | Banco (schema) | Teste |
 |---|---|---|---|
-| Dinheiro nunca é `number` | | | |
+| Dinheiro nunca é `number` | `Money` com `bigint` de centavos | | `test/unit/domain/money.test.ts` |
 | Saldo nunca negativo | | | |
 | Uma wallet por `playerId` + `currency` | | | |
 | Toda alteração de saldo tem um lançamento no ledger | | | |
-| Ledger imutável (sem UPDATE/DELETE) | | | |
+| Ledger imutável (sem UPDATE/DELETE) | `WalletLedgerEntry`: campos `readonly` e `Object.freeze`, sem métodos de transição | | `test/unit/domain/wallet-ledger-entry.test.ts` |
 | No máximo um lançamento por transação por wallet | | | |
 | Operação idempotente (sem débito ou crédito duplicado) | | | |
 | Mesma key com payload diferente gera conflito | | | |
@@ -83,6 +103,8 @@ Cada invariante é garantida **em duas camadas** (domínio e banco) e **provada 
 ## 4. Interpretações adotadas
 
 Pontos em que o enunciado admite mais de uma leitura, e a leitura escolhida:
+
+- **Escala do `amount` na entrada:** o desafio diz "escala fixa de 2 casas" e também manda rejeitar "mais de 2 casas decimais", o que sugere que menos casas são aceitáveis. Aceitamos de 0 a 2 casas e normalizamos para 2 (`"25.5"` vira `"25.50"`). A resposta sempre sai com 2 casas, e o `payloadHash` usa o valor normalizado, então `"25.5"` e `"25.50"` são o mesmo pedido.
 
 <!-- Preencher conforme as regras forem implementadas. -->
 
