@@ -1,0 +1,3 @@
+[test]
+# Global teardown: closes the shared test database connection after all test files.
+preload = ["./test/support/preload.ts"]

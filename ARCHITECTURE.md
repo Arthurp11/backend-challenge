@@ -67,8 +67,24 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
   - `add`, `subtract` e `isLessThan` entre moedas diferentes lançam `CurrencyMismatchError`.
   - `equals` só responde `false`, porque perguntar se dois valores são iguais é uma pergunta legítima, enquanto somar BRL com USD não faz sentido.
 
+### D6. ORM e mapeamento domínio ↔ persistência
+
+- **Contexto:** o desafio prefere o MikroORM, proíbe que o domínio dependa do ORM e avalia a estratégia transacional. No caminho do dinheiro, a ordem dos statements e o ponto exato de cada erro de constraint importam.
+- **Decisão:**
+  - **Records separados do domínio:** o MikroORM 7 mapeia "records" (o formato da linha) com `EntitySchema` em `infrastructure/persistence/schemas.ts`. Mappers convertem record ↔ domínio sempre via `rehydrate`. O domínio não tem decorator nem tipo do ORM.
+  - **Dinheiro:** colunas `numeric(20,2)` lidas como string (`DecimalType('string')`) e convertidas com `Money.from`, com a moeda em coluna separada. Uma transação rejeitada por `CURRENCY_MISMATCH` guarda o saldo observado em outra moeda, por isso `result_balance` tem a sua própria coluna de moeda.
+  - **Transação:** uma porta `UnitOfWork`, implementada com `orm.em.fork().transactional(...)` e `READ COMMITTED` explícito. Uso um fork por unidade de trabalho porque workers e consumer não têm request context, e forks não compartilham identity map.
+  - **Sem escrita implícita:** no caminho do dinheiro, só uso operações imediatas (`insert`, `nativeUpdate`, `findOne` com `LockMode.PESSIMISTIC_WRITE`), na ordem em que o use case chama. As leituras usam `disableIdentityMap`, e nada fica para o flush implícito do Unit of Work.
+  - **Erros:** os códigos SQLSTATE viram erros da aplicação. `23505` vira `UniqueViolationError`, com o nome da constraint. Lock timeout, deadlock, serialização, timeouts e conexão viram `TransientInfrastructureError`.
+  - **Timeouts por sessão** (via `driverOptions`): `lock_timeout` de 2s, `statement_timeout` de 5s e `idle_in_transaction_session_timeout` de 10s. As migrations rodam sem eles, porque um índice numa tabela grande pode demorar mais do que uma requisição deveria.
+- **Alternativas descartadas:**
+  - Decorators nas classes de domínio: acoplariam o domínio ao ORM, e o construtor privado brigaria com a hidratação do ORM.
+  - `persist` + `flush` (Unit of Work clássico): ordena os statements pelas foreign keys e só executa no flush. Eu quero a ordem explícita (lock → regras → insert → update) e cada erro de constraint no ponto onde aconteceu.
+  - SQL cru em todo lugar: perderia a tipagem, o `LockMode` e o `transactional()`.
+- **Trade-off:** o Unit of Work e o Identity Map do MikroORM ficam subutilizados. Troquei essa conveniência por previsibilidade no caminho financeiro. Os mappers são código manual a mais, mas tudo fica explícito.
+- **Testes de integração:** rodam num banco próprio (`wagering_test`), recriado a partir das migrations reais a cada execução. O harness se recusa a resetar qualquer banco cujo nome não termine em `_test`.
+
 <!-- Próximas decisões, preenchidas a cada bloco:
-     D6 ORM e mapeamento domínio ↔ persistência
      D7 Estratégia de concorrência
      D8 Idempotência e payloadHash
      D9 Referências fora de ordem
@@ -132,18 +148,19 @@ Cada invariante é garantida **em duas camadas** (domínio e banco) e **provada 
 
 | Invariante | Domínio | Banco (schema) | Teste |
 |---|---|---|---|
-| Dinheiro nunca é `number` | `Money` com `bigint` de centavos | | `test/unit/domain/money.test.ts` |
-| Saldo nunca negativo | `Wallet.debit` lança `InsufficientFundsError`; `WalletLedgerEntry` recusa saldo final negativo | | `test/unit/domain/wallet.test.ts`, `apply-wager-transaction.test.ts` |
-| Uma wallet por `playerId` + `currency` | | | |
-| Toda alteração de saldo tem um lançamento no ledger | `debit` e `credit` são o único jeito de mudar o saldo, e ambos devolvem o lançamento | | `test/unit/domain/wallet.test.ts` ("the ledger rebuilds the balance") |
-| Ledger imutável (sem UPDATE/DELETE) | `WalletLedgerEntry`: campos `readonly` e `Object.freeze`, sem métodos de transição | | `test/unit/domain/wallet-ledger-entry.test.ts` |
-| No máximo um lançamento por transação por wallet | `applyWagerTransaction` recusa uma transação que já está em estado terminal | | `test/unit/domain/apply-wager-transaction.test.ts` |
-| Operação idempotente (sem débito ou crédito duplicado) | | | |
-| Mesma key com payload diferente gera conflito | `payloadHash` canônico e `matchesPayload` | | `test/unit/domain/payload-hash.test.ts` |
-| Referência revertida no máximo uma vez | `ALREADY_REVERSED` quando a referência já tem uma reversão processada | | `test/unit/domain/apply-wager-transaction.test.ts` |
-| Sem lost update entre instâncias | | | |
-| Evento publicado só depois do commit | | | |
-| `wallet.balance == saldo reconstruído pelo ledger` | cada lançamento guarda saldo antes e depois e a versão da wallet | | `test/unit/domain/wallet.test.ts` ("the ledger rebuilds the balance") |
+| Dinheiro nunca é `number` | `Money` com `bigint` de centavos | `numeric(20,2)`, lido como string (`DecimalType('string')`) | `test/unit/domain/money.test.ts` |
+| Saldo nunca negativo | `Wallet.debit` lança `InsufficientFundsError`; `WalletLedgerEntry` recusa saldo final negativo | `CHECK wallets_balance_non_negative` e `CHECK` nos saldos do ledger | `test/unit/domain/wallet.test.ts`, `test/integration/schema-constraints.test.ts` |
+| Uma wallet por `playerId` + `currency` | — (só o banco enxerga todas as wallets) | `UNIQUE wallets_player_currency_key` | `test/integration/schema-constraints.test.ts` |
+| Toda alteração de saldo tem um lançamento no ledger | `debit` e `credit` são o único jeito de mudar o saldo, e ambos devolvem o lançamento | constraint trigger diferido `wallets_balance_change_is_ledgered`: no commit, cada versão da wallet precisa do lançamento com aquele saldo | `test/unit/domain/wallet.test.ts`, `test/integration/schema-constraints.test.ts` |
+| Ledger imutável (sem UPDATE/DELETE) | `WalletLedgerEntry`: campos `readonly` e `Object.freeze`, sem métodos de transição | triggers append-only contra `UPDATE`, `DELETE` e `TRUNCATE` | `test/unit/domain/wallet-ledger-entry.test.ts`, `test/integration/schema-constraints.test.ts` |
+| No máximo um lançamento por transação por wallet | `applyWagerTransaction` recusa uma transação que já está em estado terminal | `UNIQUE (wallet_id, transaction_id)` e `UNIQUE (wallet_id, wallet_version)` | `test/unit/domain/apply-wager-transaction.test.ts`, `test/integration/schema-constraints.test.ts` |
+| Operação idempotente (sem débito ou crédito duplicado) | | `UNIQUE idempotency_key` e `UNIQUE (provider_id, external_transaction_id)` | `test/integration/schema-constraints.test.ts` |
+| Mesma key com payload diferente gera conflito | `payloadHash` canônico e `matchesPayload` | `payload_hash` gravado com a transação | `test/unit/domain/payload-hash.test.ts` |
+| Referência revertida no máximo uma vez | `ALREADY_REVERSED` quando a referência já tem uma reversão processada | índice único parcial `wager_transactions_single_reversal` | `test/unit/domain/apply-wager-transaction.test.ts`, `test/integration/schema-constraints.test.ts` |
+| Transação terminal não muda de estado | `InvalidTransactionStateError` | trigger `wager_transactions_terminal_is_final` (e transações nunca são apagadas) | `test/unit/domain/wager-transaction.test.ts`, `test/integration/schema-constraints.test.ts` |
+| Sem lost update entre instâncias | | `SELECT … FOR UPDATE` por wallet e `UPDATE … WHERE version = ?` | `test/integration/persistence.test.ts` |
+| Evento publicado só depois do commit | | `outbox_messages` gravada na mesma transação SQL | `test/integration/persistence.test.ts` (atomicidade) |
+| `wallet.balance == saldo reconstruído pelo ledger` | cada lançamento guarda saldo antes e depois e a versão da wallet | trigger diferido acima, mais a corrente `balance_before = balance_after` anterior | `test/unit/domain/wallet.test.ts`, `test/support/ledger-invariant.ts` (usado em todo teste de integração) |
 
 ---
 

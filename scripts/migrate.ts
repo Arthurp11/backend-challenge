@@ -30,7 +30,7 @@ async function withMigrationLock<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-const orm = await MikroORM.init(buildOrmConfig(env));
+const orm = await MikroORM.init(buildOrmConfig(env, 'migrations'));
 
 try {
   switch (command) {

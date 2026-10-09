@@ -13,6 +13,12 @@ const EnvSchema = z.object({
 
   DATABASE_URL: z.string().default('postgres://wagering:wagering@localhost:5433/wagering'),
   DB_POOL_MAX: z.coerce.number().int().positive().default(20),
+  // A request never waits forever on a hot wallet: past the lock timeout it fails as transient (retryable).
+  DB_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  // Kills sessions that hold locks while idle inside a transaction (e.g. a crashed request handler).
+  DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
 
   AWS_REGION: z.string().default('us-east-1'),
   AWS_ENDPOINT_URL: z.string().default('http://localhost:4566'),

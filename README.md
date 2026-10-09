@@ -32,7 +32,7 @@ docker compose up --build --scale app=3   # portas 3000, 3001 e 3002
 | `bun run migration:up` / `migration:down` / `migration:status` | aplica, reverte uma, mostra o estado |
 | `bun run sqs:setup` | cria as filas (idempotente) |
 | `bun run test` | testes de unidade (rápidos, sem Docker) |
-| `bun run test:integration` | integração e concorrência contra Postgres e MiniStack reais |
+| `bun run test:integration` | integração e concorrência contra Postgres e MiniStack reais (antes: `docker compose up -d postgres sqs`). Usa o banco `wagering_test`, recriado a cada execução |
 
 ## Portas e variáveis
 
