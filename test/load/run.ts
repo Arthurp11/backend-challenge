@@ -124,8 +124,10 @@ function sumSeries(text: string, name: string, labelFilter = ''): number {
   let total = 0;
   for (const line of text.split('\n')) {
     if (line.startsWith('#')) continue;
-    const [series, value] = line.split(' ');
-    if (series?.split('{')[0] === name && series.includes(labelFilter) && value !== undefined) total += Number(value);
+    // The value follows the last space: label values may contain spaces (reason="connection failure").
+    const cut = line.lastIndexOf(' ');
+    const series = line.slice(0, cut);
+    if (cut > 0 && series.split('{')[0] === name && series.includes(labelFilter)) total += Number(line.slice(cut + 1));
   }
   return total;
 }
