@@ -1,4 +1,4 @@
-import { TransientInfrastructureError, UniqueViolationError } from '../../application/errors';
+import { ApplicationError, TransientInfrastructureError, UniqueViolationError } from '../../application/errors';
 import { DomainError } from '../../domain/shared/domain-error';
 import { metrics } from '../observability/metrics';
 
@@ -24,7 +24,8 @@ const TRANSIENT_MESSAGES = /connection terminated|timeout exceeded when trying t
  * errors. Domain errors and unknown errors pass through untouched.
  */
 export function translateDatabaseError(error: unknown): unknown {
-  if (!(error instanceof Error) || error instanceof DomainError) {
+  // Our own errors are already classified, and their messages carry client input (keys, ids).
+  if (!(error instanceof Error) || error instanceof DomainError || error instanceof ApplicationError) {
     return error;
   }
   const { code, constraint } = error as { code?: unknown; constraint?: unknown };
