@@ -111,22 +111,37 @@ describe('persistence (real PostgreSQL)', () => {
     await assertLedgerInvariant(orm, wallet.id);
   });
 
-  it('is atomic: if anything fails, nothing of the unit of work is committed', async () => {
+  it('is atomic: if anything fails, nothing of the unit of work is committed (wallet, ledger, inbox, outbox)', async () => {
     const wallet = await persistedWallet('100.00');
+    const at = new Date();
+    const messageId = uuid();
+    let transactionId = '';
+    let eventId = '';
 
     const failing = uow.run(async (repos) => {
+      await repos.inbox.insertIfAbsent(InboxMessage.receive({ messageId, consumerName: 'wager-consumer', payloadHash: 'abc', receivedAt: at }));
       const locked = (await repos.wallets.findByIdForUpdate(wallet.id))!;
       const transaction = bet(locked, '10.00');
-      const { entry } = applyWagerTransaction({ wallet: locked, transaction, reference: { kind: 'none' }, entryId: uuid(), at: new Date(), referenceRetry: retry });
+      transactionId = transaction.id;
+      const { entry } = applyWagerTransaction({ wallet: locked, transaction, reference: { kind: 'none' }, entryId: uuid(), at, referenceRetry: retry });
       await repos.transactions.insert(transaction);
       await repos.ledger.insert(entry!);
       await repos.wallets.saveBalance(locked, 1);
+      const event = WagerTransactionProcessed.from(transaction, { eventId: uuid(), correlationId: uuid(), occurredAt: at });
+      eventId = event.eventId;
+      await repos.outbox.enqueue([OutboxMessage.enqueue(event)]);
       throw new Error('crash before commit');
     });
 
     await expect(failing).rejects.toThrow('crash before commit');
     const after = await uow.run((repos) => repos.wallets.findById(wallet.id));
     expect(after?.balance.equals(brl('100.00'))).toBe(true);
+    const count = async (table: string, column: string, id: string) =>
+      ((await orm.em.fork().getConnection().execute(`select count(*)::int as n from ${table} where ${column} = ?`, [id])) as Array<{ n: number }>)[0]?.n;
+    expect(await count('wager_transactions', 'id', transactionId)).toBe(0);
+    expect(await count('wallet_ledger_entries', 'transaction_id', transactionId)).toBe(0);
+    expect(await count('inbox_messages', 'message_id', messageId)).toBe(0);
+    expect(await count('outbox_messages', 'id', eventId)).toBe(0);
     await assertLedgerInvariant(orm, wallet.id);
   });
 
