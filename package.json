@@ -14,7 +14,8 @@
     "test": "bun test test/unit",
     "test:integration": "bun test test/integration test/concurrency --timeout 120000",
     "sqs:send": "bun run scripts/send-wager-message.ts",
-    "test:all": "bun test test/unit test/integration test/concurrency --timeout 120000"
+    "test:all": "bun test test/unit test/integration test/concurrency --timeout 120000",
+    "test:load": "bun run test/load/run.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1147.0",
