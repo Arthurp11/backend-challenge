@@ -66,9 +66,10 @@ function buildWorkers({ env, uow, clock, ids, sqs, urls, processWagerTransaction
     const loop = new PollingLoop(
       env.PENDING_REFERENCE_POLL_MS,
       async () => {
-        const { examined, resolved } = await resolve.runOnce();
+        const { examined, resolved, failures } = await resolve.runOnce();
         for (const status of resolved) metrics.pendingReferenceResolutions.inc({ status });
-        return examined === env.PENDING_REFERENCE_BATCH_SIZE;
+        for (const failure of failures) logFailure('pending-references')(failure);
+        return examined === env.PENDING_REFERENCE_BATCH_SIZE && failures.length === 0;
       },
       logFailure('pending-references'),
     );

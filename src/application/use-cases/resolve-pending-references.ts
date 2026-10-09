@@ -27,17 +27,26 @@ export class ResolvePendingReferences {
     private readonly options: ResolvePendingReferencesOptions,
   ) {}
 
-  /** `examined` equal to the batch size means "call again right away"; `resolved` lists final statuses. */
-  async runOnce(): Promise<{ examined: number; resolved: WagerTransactionStatus[] }> {
+  /**
+   * `examined` equal to the batch size means "call again right away"; `resolved` lists final statuses;
+   * `failures` are candidates that threw and stay due for the next tick.
+   */
+  async runOnce(): Promise<{ examined: number; resolved: WagerTransactionStatus[]; failures: unknown[] }> {
     const due = await this.uow.run(({ transactions }) => transactions.findDuePendingReferences(this.clock.now(), this.options.batchSize));
     const resolved: WagerTransactionStatus[] = [];
+    const failures: unknown[] = [];
     for (const candidate of due) {
-      const status = await this.retry(candidate.id, candidate.walletId);
-      if (status && status !== WagerTransactionStatus.PendingReference) {
-        resolved.push(status);
+      // One failing candidate (e.g. a hot wallet past its lock timeout) must not stall the other wallets.
+      try {
+        const status = await this.retry(candidate.id, candidate.walletId);
+        if (status && status !== WagerTransactionStatus.PendingReference) {
+          resolved.push(status);
+        }
+      } catch (error) {
+        failures.push(error);
       }
     }
-    return { examined: due.length, resolved };
+    return { examined: due.length, resolved, failures };
   }
 
   private async retry(transactionId: string, walletId: string): Promise<WagerTransactionStatus | undefined> {
