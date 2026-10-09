@@ -12,8 +12,17 @@ export function testDatabaseUrl(): string {
   return url.toString();
 }
 
+/** Background workers are off by default in tests: each test turns on exactly what it exercises. */
+export const TEST_ENV_DEFAULTS: Record<string, string> = {
+  NODE_ENV: 'test',
+  LOG_LEVEL: 'silent',
+  RUN_CONSUMER: 'false',
+  RUN_OUTBOX_PUBLISHER: 'false',
+  RUN_PENDING_REFERENCE_WORKER: 'false',
+};
+
 export function testEnv(overrides: Record<string, string> = {}): Env {
-  return loadEnv({ ...process.env, NODE_ENV: 'test', DATABASE_URL: testDatabaseUrl(), ...overrides });
+  return loadEnv({ ...process.env, ...TEST_ENV_DEFAULTS, DATABASE_URL: testDatabaseUrl(), ...overrides });
 }
 
 let ready: Promise<MikroORM> | undefined;
