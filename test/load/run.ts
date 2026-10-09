@@ -13,6 +13,8 @@ const BASE_URLS = (process.env.LOAD_BASE_URLS ?? 'http://localhost:3000,http://l
 const CONCURRENCY = Number(process.env.LOAD_CONCURRENCY ?? 64);
 // Multiplies every request count, e.g. LOAD_SCALE=5 for a longer run.
 const SCALE = Number(process.env.LOAD_SCALE ?? 1);
+// The hot-wallet scenario runs once per level: same work, growing queue on one wallet lock.
+const HOT_CONCURRENCY = (process.env.LOAD_HOT_CONCURRENCY ?? '8,64,256').split(',').map(Number);
 
 interface Wallet {
   id: string;
@@ -226,6 +228,13 @@ async function distinctWallets(): Promise<ScenarioResult> {
   return runScenario('distinct wallets', requests);
 }
 
+/** Everybody on one wallet: the per-wallet lock serializes the requests (D7), so they queue on it. */
+async function hotWallet(concurrency: number): Promise<ScenarioResult> {
+  const [wallet] = await openWallets(1);
+  const requests = Array.from({ length: 1_000 * SCALE }, () => wagerRequest(wallet!, 'BET', '0.01'));
+  return runScenario('hot wallet', requests, concurrency);
+}
+
 // ---- report
 
 async function checkReady(): Promise<void> {
@@ -267,4 +276,5 @@ function report(results: ScenarioResult[]): void {
 
 await checkReady();
 const results = [await distinctWallets()];
+for (const concurrency of HOT_CONCURRENCY) results.push(await hotWallet(concurrency));
 report(results);
