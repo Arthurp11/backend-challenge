@@ -24,6 +24,7 @@ interface Wallet {
 interface Sample {
   status: number | 'network';
   ms: number;
+  error?: string;
 }
 
 interface ScenarioResult {
@@ -32,6 +33,7 @@ interface ScenarioResult {
   requests: number;
   seconds: number;
   statuses: Record<string, number>;
+  networkErrors: string[];
   latency: { p50: number; p95: number; p99: number; max: number };
   server: Counters;
   outbox: { maxLagSeconds: number; maxPending: number; drainSeconds: number };
@@ -54,8 +56,9 @@ async function timed(request: () => Promise<Response>): Promise<Sample> {
     const response = await request();
     await response.arrayBuffer();
     return { status: response.status, ms: performance.now() - started };
-  } catch {
-    return { status: 'network', ms: performance.now() - started };
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    return { status: 'network', ms: performance.now() - started, error: code ?? String(error) };
   }
 }
 
@@ -214,6 +217,7 @@ async function runScenario(name: string, requests: WagerRequest[], concurrency =
     requests: samples.length,
     seconds,
     statuses,
+    networkErrors: samples.flatMap((sample) => (sample.error ? [sample.error] : [])),
     latency: { p50: percentile(sorted, 50), p95: percentile(sorted, 95), p99: percentile(sorted, 99), max: sorted.at(-1) ?? 0 },
     server,
     outbox: { maxLagSeconds, maxPending, drainSeconds },
@@ -280,6 +284,9 @@ function report(results: ScenarioResult[]): void {
       `| ${name} | ${server.processed} | ${server.rejected} | ${server.duplicates} | ${server.retries} | ${server.lockConflicts} | ` +
         `${outbox.maxLagSeconds.toFixed(2)} | ${outbox.maxPending} | ${outbox.drainSeconds.toFixed(2)} |`,
     );
+  }
+  for (const { name, networkErrors } of results) {
+    if (networkErrors.length) console.log(`\nnetwork errors in "${name}": ${[...new Set(networkErrors)].join(', ')}`);
   }
 }
 
