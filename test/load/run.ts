@@ -235,6 +235,15 @@ async function hotWallet(concurrency: number): Promise<ScenarioResult> {
   return runScenario('hot wallet', requests, concurrency);
 }
 
+/** At-least-once delivery under load: every transaction sent 5 times at once, to different instances. */
+async function duplicateKeys(copies = 5): Promise<ScenarioResult> {
+  const wallets = await openWallets(50 * SCALE);
+  const requests = Array.from({ length: 600 * SCALE }, (_, i) => wagerRequest(wallets[i % wallets.length]!, 'BET')).flatMap(
+    (request) => Array.from({ length: copies }, () => request),
+  );
+  return runScenario(`duplicate keys (x${copies})`, requests);
+}
+
 // ---- report
 
 async function checkReady(): Promise<void> {
@@ -277,4 +286,5 @@ function report(results: ScenarioResult[]): void {
 await checkReady();
 const results = [await distinctWallets()];
 for (const concurrency of HOT_CONCURRENCY) results.push(await hotWallet(concurrency));
+results.push(await duplicateKeys());
 report(results);
