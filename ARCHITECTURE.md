@@ -150,7 +150,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Crash entre publicar e commitar:** a linha continua não publicada e o lock cai com a sessão. Outra instância publica de novo, então a entrega é at-least-once.
   - O `eventId` vai como `MessageDeduplicationId` (o FIFO descarta a repetição dentro de 5 minutos).
   - Os consumidores deduplicam por `eventId`.
-- **Ordem:** `MessageGroupId = walletId` mantém a ordem por wallet dentro de um publisher. Entre publishers concorrentes, a ordem é best-effort. Para ordenar ou ignorar eventos atrasados, os consumidores usam o `walletVersion` do `WalletBalanceChanged`.
+- **Ordem:** a ordem por wallet é best-effort. O `MessageGroupId = walletId` preserva a ordem de envio, mas dois publishers concorrentes, ou uma falha de publicação (o evento que falhou volta com backoff, e um evento mais novo da mesma wallet pode sair antes), podem inverter dois eventos. Para ordenar ou ignorar eventos atrasados, os consumidores usam o `walletVersion` do `WalletBalanceChanged`.
 - **Trade-off:** as linhas ficam travadas durante a chamada ao SQS. O tempo é limitado pelo timeout de 3s por mensagem, menor que o `idle_in_transaction_session_timeout` (10s).
 - **Provas:** `test/integration/outbox.test.ts` (dois publishers sem perda nem duplicata, falha e reentrega) e `multi-instance.test.ts` (publisher morto com SIGKILL entre publicar e marcar; outra instância assume).
 

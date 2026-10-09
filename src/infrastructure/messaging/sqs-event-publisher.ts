@@ -4,8 +4,8 @@ import type { OutboxMessage } from '../../domain/messaging/outbox-message';
 import type { QueueUrls } from './queue-urls';
 
 /**
- * Publishes to the events FIFO queue. MessageGroupId = walletId keeps per-wallet ordering within a
- * publisher; MessageDeduplicationId = eventId lets SQS drop a re-publish inside its 5-minute window
+ * Publishes to the events FIFO queue. MessageGroupId = walletId keeps the send order per wallet (best
+ * effort overall: see ARCHITECTURE D10); MessageDeduplicationId = eventId lets SQS drop a re-publish inside its 5-minute window
  * (an optimization: consumers still deduplicate by eventId). Each call has a hard timeout, because it
  * runs while the outbox rows are locked.
  */

@@ -39,14 +39,16 @@ export class PublishOutbox {
       for (const message of claimed) {
         try {
           await this.publisher.publish(message);
-          this.options.afterPublish?.();
-          message.markPublished(this.clock.now());
-          await outbox.save(message);
-          published += 1;
         } catch (error) {
           message.scheduleRetry(this.clock.now(), this.options.retry);
           await outbox.save(message, error instanceof Error ? error.message : String(error));
+          continue;
         }
+        // Outside the try: a database error here surfaces as itself and rolls the batch back (republished later).
+        this.options.afterPublish?.();
+        message.markPublished(this.clock.now());
+        await outbox.save(message);
+        published += 1;
       }
       return { claimed: claimed.length, published, failed: claimed.length - published };
     });
