@@ -20,6 +20,12 @@ async function walletWithBets(count: number) {
   return wallet;
 }
 
+async function metricValue(series: string): Promise<number> {
+  const text = await fetch(`${app.url}/metrics`).then((response) => response.text());
+  const line = text.split('\n').find((candidate) => candidate.startsWith(`${series} `));
+  return line ? Number(line.slice(series.length + 1)) : 0;
+}
+
 describe('GET /wallets/:walletId/ledger', () => {
   it('pages through the ledger with a stable, opaque cursor', async () => {
     const wallet = await walletWithBets(4); // 1 opening + 4 debits
@@ -95,6 +101,20 @@ describe('observability', () => {
     expect(text).toContain('wager_transactions_total{status="PROCESSED",kind="BET",source="http"}');
     expect(text).toContain('outbox_lag_seconds');
     expect(text).toContain('wager_processing_duration_seconds_bucket');
+  });
+
+  it('counts an idempotent replay as a duplicate, not as another transaction', async () => {
+    const processed = 'wager_transactions_total{status="PROCESSED",kind="BET",source="http"}';
+    const duplicates = 'wager_duplicates_detected_total{source="http"}';
+    const wallet = await walletWithBets(0);
+    const bet = wagerRequest(wallet, { money: { amount: '1.00', currency: 'BRL' } });
+    const before = { processed: await metricValue(processed), duplicates: await metricValue(duplicates) };
+
+    await app.post('/wagering/transactions', bet.body, bet.headers);
+    await app.post('/wagering/transactions', bet.body, bet.headers);
+
+    expect((await metricValue(processed)) - before.processed).toBe(1);
+    expect((await metricValue(duplicates)) - before.duplicates).toBe(1);
   });
 
   it('echoes the caller correlation id, or creates one', async () => {

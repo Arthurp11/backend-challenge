@@ -54,7 +54,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Decisão:** `/health/live` não checa dependências. `/health/ready` executa `select 1` no Postgres e `GetQueueUrl` no SQS, com timeout de 2s cada; se algum falhar, responde 503.
 - **Por quê:** se o liveness dependesse do banco, uma queda do Postgres faria o orquestrador reiniciar todas as instâncias em loop, e reiniciar não conserta o banco. O readiness só tira a instância do tráfego.
 - **Detalhe:** o primeiro readiness respondia `database: down` com o banco no ar. Investigando, vi que o MikroORM 7 só conecta na primeira query e que o `checkConnection()` não abre conexão. Por isso o readiness executa um `select 1` real.
-- **Trade-off consciente:** o README pede que o readiness dependa do SQS, e segui isso. Em produção, eu faria a API depender só do Postgres: graças ao outbox, transações continuam sendo processadas com o SQS fora, e os eventos acumulam até ele voltar. SQS fora seria um estado *degradado*, sinalizado por métrica e alerta de outbox lag, sem tirar a instância do tráfego.
+- **Trade-off consciente:** o enunciado pede que o readiness dependa do SQS, e segui isso. Em produção, eu faria a API depender só do Postgres: graças ao outbox, transações continuam sendo processadas com o SQS fora, e os eventos acumulam até ele voltar. SQS fora seria um estado *degradado*, sinalizado por métrica e alerta de outbox lag, sem tirar a instância do tráfego.
 
 ### D5. Dinheiro: `bigint` em centavos no domínio, string decimal nos contratos
 
@@ -167,6 +167,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 
 - **Ordem:** mensagens do mesmo `MessageGroupId` (a wallet) são processadas em sequência, e grupos diferentes em paralelo.
 - **SIGTERM:** para de buscar mensagens (aborta o long poll), deixa terminar o que está em andamento (até 10s) e devolve a visibilidade (0) das mensagens recebidas que não começaram.
+  - **No Docker:** no smoke test a partir de um clone limpo, o `docker compose stop` terminava com exit 137 (SIGKILL), sem drenar. Dois motivos: o Bun era o PID 1, e o PID 1 ignora o SIGTERM que o Nest reenvia a si mesmo depois dos hooks; e o tempo até o SIGKILL dependia da máquina (1s no meu Docker Desktop). Por isso o serviço `app` usa `init: true` (o tini do Docker vira o PID 1 e repassa os sinais) e `stop_grace_period: 20s`, mais que a drenagem de 10s.
 - **Crash depois do commit e antes do ack:** a mensagem volta depois da visibility, a inbox reconhece o `messageId` e a resposta é um replay sem efeito. O teste mata o processo com SIGKILL exatamente nesse ponto (`FAULT_INJECTION=crash_after_commit_before_ack`, um ponto de injeção desligado por padrão).
 - **Provas:** `test/integration/consumer.test.ts` (redelivery, HTTP mais SQS, rejeição com ack, DLQ explícita, retry com backoff e redrive para a DLQ) e `multi-instance.test.ts`.
 
@@ -196,7 +197,7 @@ O mesmo mapeamento vale em todos os endpoints. O provedor decide pelo status e p
 
   | Exigência da seção 12 | Métrica |
   |---|---|
-  | transações por status | `wager_transactions_total{status,kind,source}` |
+  | transações por status | `wager_transactions_total{status,kind,source}` (replays não entram aqui, só em duplicatas) |
   | duplicatas detectadas | `wager_duplicates_detected_total{source}` |
   | retries | `wager_retries_total{reason}` |
   | mensagens em DLQ | `wager_dead_letter_messages_total{reason}` |
@@ -312,7 +313,6 @@ Pontos em que o enunciado admite mais de uma leitura, e a leitura escolhida:
 - **Valores por tipo:** BET, WIN, REFUND e ROLLBACK exigem valor maior que zero. Um "WIN de zero" deve ser enviado como LOSS, que aceita valor maior ou igual a zero e nunca move saldo.
 - **Referência que falhou:** se a referência terminou `REJECTED` ou `FAILED`, a transação dependente é rejeitada na hora com `REFERENCE_NOT_PROCESSED`, sem esperar: a referência nunca vai mudar de estado.
 - **`aggregateId` dos eventos:** todos os eventos usam a `walletId` como `aggregateId`, inclusive os de transação. A wallet é a unidade de consistência (seção 8), então os consumidores podem particionar e ordenar por ela. O `transactionId` vai dentro de `data`.
-
 - **Replay de uma transação que estava pendente:** o replay devolve o estado gravado *agora*. Antes da resolução, ele repete o 202 `PENDING_REFERENCE`; depois que o worker resolve, devolve o estado final (`PROCESSED` ou `REJECTED`), com o saldo observado na resolução.
 - **Wallet inexistente:** 404 `WALLET_NOT_FOUND`, sem gravar nada. A transação não pode existir sem a sua wallet (FK). Pela fila, vai direto para a DLQ como erro permanente.
 - **`FAILED` no HTTP:** 422 com `PERMANENT_PROCESSING_ERROR`. É terminal e não adianta reenviar.

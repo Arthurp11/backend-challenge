@@ -7,7 +7,7 @@ collectDefaultMetrics({ register: registry });
 export const metrics = {
   transactions: new Counter({
     name: 'wager_transactions_total',
-    help: 'Wager transactions by resulting status, kind and entry point',
+    help: 'Wager transactions by resulting status, kind and entry point (replays go to wager_duplicates_detected_total)',
     labelNames: ['status', 'kind', 'source'] as const,
     registers: [registry],
   }),

@@ -55,9 +55,10 @@ export class WageringController {
       correlationId: correlationId ?? randomUUID(),
     });
     metrics.processingSeconds.observe({ source: 'http' }, (performance.now() - started) / 1_000);
-    metrics.transactions.inc({ status: result.status, kind: input.kind, source: 'http' });
     if (result.idempotentReplay) {
       metrics.duplicates.inc({ source: 'http' });
+    } else {
+      metrics.transactions.inc({ status: result.status, kind: input.kind, source: 'http' });
     }
     logger.info({ transactionId: result.transactionId, status: result.status, replay: result.idempotentReplay }, 'transaction handled');
     response.status(httpStatusFor(result));

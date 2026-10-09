@@ -43,6 +43,10 @@ services:
   # Scale with `docker compose up --scale app=3`: each replica takes the next free host port in the range.
   app:
     build: .
+    # Bun as PID 1 would ignore the SIGTERM that Nest re-raises after its shutdown hooks; tini forwards it.
+    init: true
+    # Longer than the consumer drain (SHUTDOWN_GRACE_MS, 10s) plus closing HTTP and the pool.
+    stop_grace_period: 20s
     environment: *app-env
     ports:
       - "${APP_HOST_PORTS:-3000-3002}:3000"

@@ -1,4 +1,5 @@
 import type { BeforeApplicationShutdown, OnApplicationBootstrap } from '@nestjs/common';
+import { logger } from '../observability/logger';
 
 export interface BackgroundWorker {
   readonly name: string;
@@ -20,7 +21,10 @@ export class BackgroundWorkers implements OnApplicationBootstrap, BeforeApplicat
     }
   }
 
-  async beforeApplicationShutdown(): Promise<void> {
+  async beforeApplicationShutdown(signal?: string): Promise<void> {
+    const workers = this.workers.map((worker) => worker.name);
+    logger.info({ signal, workers }, 'shutting down: draining background workers');
     await Promise.all(this.workers.map((worker) => worker.stop()));
+    logger.info({ workers }, 'background workers drained');
   }
 }

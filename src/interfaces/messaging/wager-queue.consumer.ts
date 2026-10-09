@@ -75,8 +75,13 @@ export class WagerQueueConsumer {
   async stop(): Promise<void> {
     this.running = false;
     this.poll?.abort();
-    const grace = new Promise((resolve) => setTimeout(resolve, this.options.shutdownGraceMs));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const grace = new Promise((resolve) => {
+      timer = setTimeout(resolve, this.options.shutdownGraceMs);
+    });
     await Promise.race([this.loop, grace]);
+    // A pending grace timer would keep the process alive after a fast drain.
+    clearTimeout(timer);
   }
 
   private async run(): Promise<void> {
@@ -163,8 +168,8 @@ export class WagerQueueConsumer {
   ): Promise<{ kind: 'ack' } | { kind: Exclude<Outcome, 'ack'>; reason: string; error: unknown }> {
     try {
       const result = await this.processWagerTransaction.execute(command);
-      metrics.transactions.inc({ status: result.status, kind: command.kind, source: 'sqs' });
       if (result.idempotentReplay) metrics.duplicates.inc({ source: 'sqs' });
+      else metrics.transactions.inc({ status: result.status, kind: command.kind, source: 'sqs' });
       logger.info({ transactionId: result.transactionId, status: result.status, replay: result.idempotentReplay }, 'message processed');
       return { kind: 'ack' };
     } catch (error) {
