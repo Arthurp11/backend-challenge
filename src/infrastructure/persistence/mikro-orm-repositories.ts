@@ -103,6 +103,15 @@ class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
     return count > 0;
   }
 
+  async findDuePendingReferences(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>> {
+    const records = await this.em.find(
+      WagerTransactionSchema,
+      { status: 'PENDING_REFERENCE', nextReferenceAttemptAt: { $lte: now } },
+      { ...READ, fields: ['id', 'walletId'], orderBy: { nextReferenceAttemptAt: 'asc' }, limit },
+    );
+    return records.map(({ id, walletId }) => ({ id, walletId }));
+  }
+
   private async findOne(where: Partial<Record<'id' | 'idempotencyKey' | 'providerId' | 'externalTransactionId', string>>) {
     const record = await this.em.findOne(WagerTransactionSchema, where, READ);
     return record ? transactionMapper.toDomain(record) : undefined;
@@ -124,6 +133,11 @@ class MikroOrmLedgerRepository implements LedgerRepository {
     );
     return records.map(ledgerMapper.toDomain);
   }
+
+  async listAllByWallet(walletId: string): Promise<WalletLedgerEntry[]> {
+    const records = await this.em.find(LedgerEntrySchema, { walletId }, { ...READ, orderBy: { walletVersion: 'asc' } });
+    return records.map(ledgerMapper.toDomain);
+  }
 }
 
 class MikroOrmOutboxRepository implements OutboxRepository {
@@ -133,6 +147,35 @@ class MikroOrmOutboxRepository implements OutboxRepository {
     if (messages.length > 0) {
       await this.em.insertMany(OutboxMessageSchema, messages.map(outboxMapper.toRecord));
     }
+  }
+
+  async claimDue(now: Date, limit: number): Promise<OutboxMessage[]> {
+    const records = await this.em.find(
+      OutboxMessageSchema,
+      { publishedAt: null, nextAttemptAt: { $lte: now } },
+      { ...READ, orderBy: { id: 'asc' }, limit, lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE },
+    );
+    return records.map(outboxMapper.toDomain);
+  }
+
+  async save(message: OutboxMessage, lastError?: string): Promise<void> {
+    await this.em.nativeUpdate(
+      OutboxMessageSchema,
+      { id: message.id },
+      {
+        attempts: message.attempts,
+        nextAttemptAt: message.nextAttemptAt ?? null,
+        publishedAt: message.publishedAt ?? null,
+        lastError: lastError ?? null,
+      },
+    );
+  }
+
+  async backlog(): Promise<{ pending: number; oldestOccurredAt: Date | undefined }> {
+    const [row] = await this.em.execute<Array<{ pending: number; oldest: string | null }>>(
+      'select count(*)::int as pending, min(occurred_at) as oldest from outbox_messages where published_at is null',
+    );
+    return { pending: row?.pending ?? 0, oldestOccurredAt: row?.oldest ? new Date(row.oldest) : undefined };
   }
 }
 

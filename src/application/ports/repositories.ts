@@ -30,16 +30,29 @@ export interface WagerTransactionRepository {
   findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
   /** True when a PROCESSED REFUND or ROLLBACK already points to this transaction. */
   hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
+  /** PENDING_REFERENCE transactions whose next attempt is due, oldest first (no lock: callers re-check). */
+  findDuePendingReferences(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>>;
 }
 
 export interface LedgerRepository {
   insert(entry: WalletLedgerEntry): Promise<void>;
   /** Entries in version order, starting after `afterVersion` (exclusive). */
   listByWallet(walletId: string, page: { afterVersion?: number; limit: number }): Promise<WalletLedgerEntry[]>;
+  /** Every entry of the wallet in version order (reconciliation). */
+  listAllByWallet(walletId: string): Promise<WalletLedgerEntry[]>;
 }
 
 export interface OutboxRepository {
   enqueue(messages: OutboxMessage[]): Promise<void>;
+  /**
+   * Locks up to `limit` due, unpublished messages with FOR UPDATE SKIP LOCKED, oldest first: concurrent
+   * publishers each take a different slice and never wait for each other.
+   */
+  claimDue(now: Date, limit: number): Promise<OutboxMessage[]>;
+  /** Persists the outcome of a publish attempt (published, or rescheduled with the last error). */
+  save(message: OutboxMessage, lastError?: string): Promise<void>;
+  /** Unpublished messages and the age of the oldest one (outbox lag). */
+  backlog(): Promise<{ pending: number; oldestOccurredAt: Date | undefined }>;
 }
 
 export interface InboxRepository {

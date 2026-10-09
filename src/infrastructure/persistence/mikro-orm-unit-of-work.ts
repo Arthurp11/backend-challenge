@@ -1,7 +1,7 @@
 import { IsolationLevel } from '@mikro-orm/core';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { TransactionalRepositories } from '../../application/ports/repositories';
-import type { UnitOfWork } from '../../application/ports/unit-of-work';
+import type { UnitOfWork, UnitOfWorkOptions } from '../../application/ports/unit-of-work';
 import { translateDatabaseError } from './database-errors';
 import { createRepositories } from './mikro-orm-repositories';
 
@@ -14,11 +14,14 @@ import { createRepositories } from './mikro-orm-repositories';
 export class MikroOrmUnitOfWork implements UnitOfWork {
   constructor(private readonly orm: MikroORM) {}
 
-  async run<T>(work: (repositories: TransactionalRepositories) => Promise<T>): Promise<T> {
+  async run<T>(work: (repositories: TransactionalRepositories) => Promise<T>, options: UnitOfWorkOptions = {}): Promise<T> {
     try {
-      return await this.orm.em.fork().transactional((em) => work(createRepositories(em)), {
-        isolationLevel: IsolationLevel.READ_COMMITTED,
-      });
+      return await this.orm.em.fork().transactional(
+        (em) => work(createRepositories(em)),
+        options.snapshot
+          ? { isolationLevel: IsolationLevel.REPEATABLE_READ, readOnly: true }
+          : { isolationLevel: IsolationLevel.READ_COMMITTED },
+      );
     } catch (error) {
       throw translateDatabaseError(error);
     }
