@@ -74,6 +74,15 @@ bun run typecheck
 - `test/concurrency/multi-instance.test.ts` sobe **processos separados** da aplicação. Ele testa 3 instâncias simultâneas, um `SIGKILL` entre commit e ack, um publisher morto entre publicar e marcar, e um reinício no meio da carga.
 - O mapa de cada teste exigido pelo desafio está em [ARCHITECTURE.md §4.1](ARCHITECTURE.md#41-onde-estão-os-testes-obrigatórios-seção-13).
 
+### Teste de carga
+
+```bash
+docker compose up --build -d --scale app=3
+bun run test:load           # ~30s: wallets distintas, hot wallet e duplicatas, com reconciliação de todas as wallets no fim
+```
+
+Ambiente, metodologia, resultados (vazão, p50/p95/p99, erros, conflitos de lock, outbox lag) e análise: [docs/load-test.md](docs/load-test.md).
+
 ## Comandos
 
 | Comando | O que faz |
