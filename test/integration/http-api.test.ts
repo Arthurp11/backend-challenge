@@ -232,6 +232,18 @@ describe('HTTP API', () => {
     });
   });
 
+  it('accepts upper-case UUIDs as the same ids (PostgreSQL returns them in lower case)', async () => {
+    const playerId = uuid().toUpperCase();
+    const created = await app.post('/wallets', { playerId, initialBalance: { amount: '100.00', currency: 'BRL' } });
+    const wallet = { id: created.body.id.toUpperCase(), playerId };
+
+    const response = await submit(wagerRequest(wallet, { money: { amount: '10.00', currency: 'BRL' } }));
+
+    expect(created.body.playerId).toBe(playerId.toLowerCase());
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ status: 'PROCESSED', balance: { amount: '90.00', currency: 'BRL' } });
+  });
+
   describe('error contract (D12): every error is { code, message, retryable }, never a bare 500', () => {
     const raw = async (path: string, init: RequestInit = {}) => {
       const response = await fetch(`${app.url}${path}`, { ...init, headers: { 'content-type': 'application/json', ...init.headers } });

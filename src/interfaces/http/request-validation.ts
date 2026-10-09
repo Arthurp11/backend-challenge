@@ -31,11 +31,14 @@ export const text = (max: number) =>
     .min(1)
     .max(max)
     .regex(/^\P{Cc}*$/u, 'control characters are not allowed');
+// PostgreSQL returns UUIDs in lower case and the domain compares ids as strings: normalize at the edge,
+// or an upper-case playerId would be persisted as a PLAYER_WALLET_MISMATCH rejection.
+const uuid = () => z.uuid().transform((value) => value.toLowerCase());
 /** Money arrives as { amount: string, currency: string }; Money.from rejects NaN, exponents, >2 decimals… */
 const money = z.strictObject({ amount: z.string(), currency: z.string() });
 
 export const createWalletBody = z.strictObject({
-  playerId: z.uuid(),
+  playerId: uuid(),
   initialBalance: money,
 });
 
@@ -43,8 +46,8 @@ export const createWalletBody = z.strictObject({
 export const wagerTransactionBody = z.strictObject({
   providerId: text(100),
   externalTransactionId: text(200),
-  playerId: z.uuid(),
-  walletId: z.uuid(),
+  playerId: uuid(),
+  walletId: uuid(),
   roundId: text(200),
   gameId: text(200),
   kind: z.enum(['BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK']),
@@ -53,7 +56,7 @@ export const wagerTransactionBody = z.strictObject({
 });
 
 export const idempotencyKeyHeader = z.string({ error: 'the Idempotency-Key header is required' }).trim().min(1).max(255);
-export const uuidParam = z.uuid();
+export const uuidParam = uuid();
 export const textParam = text(200);
 
 export const ledgerQuery = z.strictObject({
