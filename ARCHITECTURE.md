@@ -62,7 +62,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Decisão:**
   - `Money` guarda um `bigint` de centavos, com escala fixa de 2 casas. Toda conta é soma ou subtração de inteiros, então não existe arredondamento.
   - Entrada e saída são sempre strings decimais (`"25.00"`). O `toJSON()` garante que um `bigint` nunca chega a resposta, evento ou log.
-  - No banco, `numeric(20,2)` e `currency char(3)`. O driver `pg` devolve `numeric` como string, que volta ao domínio por `Money.from`, então o valor nunca passa por `number`.
+  - No banco, `numeric(20,2)` e `currency text` com `CHECK (currency ~ '^[A-Z]{3}$')`. O driver `pg` devolve `numeric` como string, que volta ao domínio por `Money.from`, então o valor nunca passa por `number`.
 - **Validação da entrada:**
   - Aceita até 2 casas e normaliza (`"25"` vira `"25.00"`).
   - Rejeita o que exigiria arredondamento (`"10.005"`), notação científica, sinal, zeros à esquerda, espaços, vírgula, `NaN`, `Infinity` e mais de 18 dígitos inteiros, que não caberiam em `numeric(20,2)`.
@@ -133,8 +133,8 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 - **Decisão:** a transação fica gravada como `PENDING_REFERENCE`, com `reference_attempts` e `next_reference_attempt_at`, e emite `WagerTransactionPendingReference`.
   - Um worker agendado busca as que estão vencidas (índice parcial).
   - Cada uma é tentada de novo na sua própria transação: trava a wallet, relê a transação e aplica **as mesmas regras** da primeira chegada.
-- **Backoff e limite:** 1s, 2s, 4s… com teto de 60s, em até 10 esperas (cerca de 6 minutos), e depois `REJECTED` com `REFERENCE_NOT_FOUND`, mais o evento. Tudo configurável por env.
-  - Por que 6 minutos: cobre redeliveries do SQS (visibility de 30s com retries) e quedas curtas. Ao mesmo tempo, o provedor recebe uma resposta definitiva em minutos, e não fica dias sem saber se a reversão vai acontecer.
+- **Backoff e limite:** 1s, 2s, 4s… com teto de 60s, em até 10 esperas (1+2+4+8+16+32+60×4 = 303s, cerca de 5 minutos), e depois `REJECTED` com `REFERENCE_NOT_FOUND`, mais o evento. Tudo configurável por env.
+  - Por que cerca de 5 minutos: cobre redeliveries do SQS (visibility de 30s com retries) e quedas curtas. Ao mesmo tempo, o provedor recebe uma resposta definitiva em minutos, e não fica dias sem saber se a reversão vai acontecer.
 - **Várias instâncias:** dois workers podem examinar o mesmo candidato. O lock da wallet e a releitura do status garantem que só um aplica (o outro vê que já não está pendente). O custo é trabalho desperdiçado, nunca efeito duplicado.
 - **Corrente:** se a referência existe mas ela mesma ainda espera a sua referência, a transação continua esperando. Se a referência terminou `REJECTED` ou `FAILED`, a rejeição é imediata (`REFERENCE_NOT_PROCESSED`).
 - **Provas:** `test/integration/pending-references.test.ts` (REFUND antes da BET, ROLLBACK antes do WIN, referência que nunca chega, dois REFUNDs da mesma BET atrasada) e `multi-instance.test.ts`.
@@ -246,7 +246,7 @@ O provedor decide pelo código, nunca pela mensagem. Os códigos fazem parte do 
 | `REFERENCE_AMOUNT_MISMATCH` | REFUND ou ROLLBACK com valor diferente da referência (reversão parcial está fora de escopo) | corrigir o payload |
 | `REFERENCE_NOT_PROCESSED` | a referência terminou `REJECTED` ou `FAILED`: não há o que reverter | desistir |
 | `ALREADY_REVERSED` | a referência já foi revertida por um REFUND ou ROLLBACK | desistir: a reversão já aconteceu |
-| `PERMANENT_PROCESSING_ERROR` | `FAILED`: erro permanente de infraestrutura, mantido para auditoria | acionar suporte |
+| `PERMANENT_PROCESSING_ERROR` | `FAILED`: erro permanente de infraestrutura, mantido para auditoria. **Reservado:** nenhum fluxo atual produz `FAILED`, porque erros permanentes são recusados antes de gravar (400, ou DLQ na fila). O status existe porque o enunciado o define (seção 6.3) | acionar suporte |
 
 Erros de **entrada** (payload malformado, OPENING enviado por provedor, REFUND sem referência) não viram transação `REJECTED`. Eles são rejeitados antes, como payload inválido, e nada é gravado.
 
@@ -276,7 +276,7 @@ Cada invariante é garantida **em duas camadas** (domínio e banco) e **provada 
 | Transação terminal não muda de estado | `InvalidTransactionStateError` | trigger `wager_transactions_terminal_is_final` (e transações nunca são apagadas) | `test/unit/domain/wager-transaction.test.ts`, `test/integration/schema-constraints.test.ts` |
 | Sem lost update entre instâncias | todo use case de escrita trava a wallet antes de ler o saldo | `SELECT … FOR UPDATE` por wallet e `UPDATE … WHERE version = ?` | `test/integration/persistence.test.ts`, `test/concurrency/*.test.ts` (inclusive 3 processos) |
 | Evento publicado só depois do commit | eventos viram `OutboxMessage` na mesma unidade de trabalho | `outbox_messages` gravada na mesma transação SQL; o publisher só lê linhas commitadas | `test/integration/persistence.test.ts` (atomicidade), `outbox.test.ts`, `multi-instance.test.ts` |
-| `wallet.balance == saldo reconstruído pelo ledger` | cada lançamento guarda saldo antes e depois e a versão da wallet | trigger diferido acima, mais a corrente `balance_before = balance_after` anterior | `test/unit/domain/wallet.test.ts`, `test/support/ledger-invariant.ts` (usado em todo teste de integração) |
+| `wallet.balance == saldo reconstruído pelo ledger` | cada lançamento guarda saldo antes e depois e a versão da wallet | trigger diferido acima (cada versão tem o seu lançamento com aquele saldo). A corrente `balance_before = balance_after` anterior é conferida pela reconciliação e pelos testes, não pelo schema | `test/unit/domain/wallet.test.ts`, `test/support/ledger-invariant.ts` (nos testes de integração e concorrência que movem saldo) |
 
 ### 4.1 Onde estão os testes obrigatórios (seção 13)
 
@@ -298,7 +298,7 @@ Cada invariante é garantida **em duas camadas** (domínio e banco) e **provada 
 | 6. dois publishers na mesma outbox | `test/integration/outbox.test.ts`, mais o publisher morto em `multi-instance.test.ts` |
 | 7. REFUND ou ROLLBACK antes da referência | `test/integration/pending-references.test.ts` |
 | 8. reinício com consistência final | `test/concurrency/multi-instance.test.ts` (SIGKILL no meio da carga, SIGTERM gracioso) |
-| invariante final `wallet.balance == ledger` | `test/support/ledger-invariant.ts`, chamado em todos os testes de integração e concorrência |
+| invariante final `wallet.balance == ledger` | `test/support/ledger-invariant.ts`, chamado nos testes de integração e concorrência que movem saldo, e a reconciliação de todas as wallets no fim do teste de carga |
 
 Nenhum teste de integração usa mock de PostgreSQL ou SQS: todos rodam contra os containers reais.
 
@@ -316,7 +316,7 @@ Pontos em que o enunciado admite mais de uma leitura, e a leitura escolhida:
 - **`aggregateId` dos eventos:** todos os eventos usam a `walletId` como `aggregateId`, inclusive os de transação. A wallet é a unidade de consistência (seção 8), então os consumidores podem particionar e ordenar por ela. O `transactionId` vai dentro de `data`.
 - **Replay de uma transação que estava pendente:** o replay devolve o estado gravado *agora*. Antes da resolução, ele repete o 202 `PENDING_REFERENCE`; depois que o worker resolve, devolve o estado final (`PROCESSED` ou `REJECTED`), com o saldo observado na resolução.
 - **Wallet inexistente:** 404 `WALLET_NOT_FOUND`, sem gravar nada. A transação não pode existir sem a sua wallet (FK). Pela fila, vai direto para a DLQ como erro permanente.
-- **`FAILED` no HTTP:** 422 com `PERMANENT_PROCESSING_ERROR`. É terminal e não adianta reenviar.
+- **`FAILED` no HTTP:** seria 422 com `PERMANENT_PROCESSING_ERROR`, terminal. Hoje nenhum fluxo produz `FAILED` (ver seção 3.2).
 - **OPENING emite eventos:** `WalletBalanceChanged` e `WagerTransactionProcessed`, porque é uma transação aplicada que muda o saldo.
 - **Mensagem SQS:** a deduplicação usa o `messageId` do envelope (seção 10), não o `MessageId` técnico do SQS, que muda a cada reenvio do produtor.
 
@@ -353,3 +353,14 @@ O que eu sei que não está ideal, e o que faria em seguida:
   - o publisher faz um `SendMessage` por evento, e o `SendMessageBatch` (até 10 por chamada) aumentaria a vazão da outbox;
   - em sobrecarga, o timeout do pool (3s) mais os retries em processo levam o pior caso a cerca de 9s. Responder 503 cedo (*load shedding*) seria melhor para o provedor.
 - **Autenticação** não implementada (seção 6).
+- **Achados de uma revisão final, ainda não corrigidos:**
+  - **Regras de domínio:**
+    - um WIN ou LOSS que referencia uma BET já estornada é aceito;
+    - uma transação pode referenciar a si mesma (espera e termina em `REFERENCE_NOT_FOUND`);
+    - uma referência de tipo ou rodada errados ainda pendente faz a dependente esperar, em vez de ser rejeitada na hora.
+  - **Reconciliação:** confere a corrente de saldos, mas não acusa versões faltando no ledger (o teste `ledger-invariant.ts` acusa).
+  - **Banco:**
+    - a app conecta como dona das tabelas, então poderia desligar os triggers; o certo seria um papel sem DDL;
+    - linhas publicadas da outbox e da inbox nunca são apagadas, e falta um expurgo periódico;
+    - o claim da outbox ordena por `id`, e não pelo índice `(next_attempt_at, id)`, o que fica caro com um acúmulo grande.
+  - **SQS:** o cliente não tem timeout de requisição, só a publicação tem.

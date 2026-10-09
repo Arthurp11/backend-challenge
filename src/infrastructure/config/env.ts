@@ -20,7 +20,7 @@ const EnvSchema = z.object({
   DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
 
-  // Out-of-order references: 1s, 2s, 4s… capped at 60s, 10 waits (about 6 minutes) before REFERENCE_NOT_FOUND.
+  // Out-of-order references: 1s, 2s, 4s… capped at 60s, 10 waits (303s, about 5 minutes) before REFERENCE_NOT_FOUND.
   REFERENCE_RETRY_BASE_MS: z.coerce.number().int().positive().default(1_000),
   REFERENCE_RETRY_MAX_MS: z.coerce.number().int().positive().default(60_000),
   REFERENCE_RETRY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(10),
