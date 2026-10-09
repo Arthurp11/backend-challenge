@@ -1,5 +1,6 @@
 import { TransientInfrastructureError, UniqueViolationError } from '../../application/errors';
 import { DomainError } from '../../domain/shared/domain-error';
+import { metrics } from '../observability/metrics';
 
 /** SQLSTATEs that mean "try again later", not "this request is wrong". */
 const TRANSIENT_SQLSTATES: Readonly<Record<string, string>> = {
@@ -32,6 +33,7 @@ export function translateDatabaseError(error: unknown): unknown {
   }
   if (typeof code === 'string') {
     const reason = TRANSIENT_SQLSTATES[code];
+    if (code === '55P03' || code === '40P01') metrics.lockConflicts.inc();
     if (reason) return new TransientInfrastructureError(reason, { cause: error });
     if (code.startsWith('08')) return new TransientInfrastructureError('connection failure', { cause: error });
     if (TRANSIENT_SYSTEM_CODES.has(code)) return new TransientInfrastructureError(`network: ${code}`, { cause: error });
