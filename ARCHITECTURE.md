@@ -348,5 +348,7 @@ O que eu sei que não está ideal, e o que faria em seguida:
 - **MiniStack guarda as filas em memória** (D1).
 - **Requisição para wallet inexistente** responde 404 e não é persistida (a FK impede), então não é "replayável" como uma rejeição.
 - **Ponto de injeção de falha** (`FAULT_INJECTION`) existe só para os testes de crash. Ele é validado por enum, com padrão `none`; em produção, eu o removeria do build.
-- **Teste de carga** (diferencial opcional) não foi feito por falta de tempo.
+- **Teste de carga** ([docs/load-test.md](docs/load-test.md)): saldo igual ao ledger em todas as wallets depois da carga, e a vazão da hot wallet plana, como previsto no D7. Dois próximos passos saíram dele:
+  - o publisher faz um `SendMessage` por evento, e o `SendMessageBatch` (até 10 por chamada) aumentaria a vazão da outbox;
+  - em sobrecarga, o timeout do pool (3s) mais os retries em processo levam o pior caso a cerca de 9s. Responder 503 cedo (*load shedding*) seria melhor para o provedor.
 - **Autenticação** não implementada (seção 6).
