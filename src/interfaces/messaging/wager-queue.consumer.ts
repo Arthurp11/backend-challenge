@@ -109,7 +109,12 @@ export class WagerQueueConsumer {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         continue;
       }
-      await this.processBatch(queueUrl, messages);
+      try {
+        await this.processBatch(queueUrl, messages);
+      } catch (error) {
+        // One bad batch must not end the loop (and the process): unacked messages are simply redelivered.
+        logger.error({ err: error }, 'batch failed; unacked messages will be redelivered');
+      }
     }
   }
 
@@ -121,30 +126,32 @@ export class WagerQueueConsumer {
     }
     await Promise.all(
       [...groups.values()].map(async (group) => {
+        // Per-wallet order: once a message must be retried, the rest of its group goes back behind it.
+        let blocked = false;
         for (const message of group) {
-          if (!this.running) {
+          if (!this.running || blocked) {
             await this.release(queueUrl, message);
             continue;
           }
-          await this.handle(queueUrl, message);
+          blocked = (await this.handle(queueUrl, message)) === 'retry';
         }
       }),
     );
   }
 
-  private async handle(queueUrl: string, message: Message): Promise<void> {
+  private async handle(queueUrl: string, message: Message): Promise<Outcome> {
     const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? '1');
     let command: WagerTransactionCommand;
     try {
       command = this.parse(message);
     } catch (error) {
       await this.deadLetter(queueUrl, message, 'INVALID_MESSAGE', error);
-      return;
+      return 'dead-letter';
     }
 
-    await withLogContext(
+    return withLogContext(
       { messageId: command.message?.messageId, walletId: command.walletId, providerId: command.providerId },
-      async () => {
+      async (): Promise<Outcome> => {
         const started = performance.now();
         const outcome = await this.process(command);
         metrics.processingSeconds.observe({ source: 'sqs' }, (performance.now() - started) / 1_000);
@@ -159,6 +166,7 @@ export class WagerQueueConsumer {
         } else {
           await this.retryLater(queueUrl, message, receiveCount, outcome.error);
         }
+        return outcome.kind;
       },
     );
   }
@@ -194,8 +202,11 @@ export class WagerQueueConsumer {
     };
   }
 
+  /** A failed ack loses nothing: the message comes back and the inbox answers it as a replay. */
   private async ack(queueUrl: string, message: Message): Promise<void> {
-    await this.sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }));
+    await this.sqs
+      .send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }))
+      .catch((error) => logger.warn({ err: error }, 'ack failed; the message will be redelivered and answered as a replay'));
   }
 
   /** Visibility backoff: 2s, 4s, 8s… capped at 60s. */
