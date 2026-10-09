@@ -37,6 +37,7 @@ interface ScenarioResult {
   latency: { p50: number; p95: number; p99: number; max: number };
   server: Counters;
   outbox: { maxLagSeconds: number; maxPending: number; drainSeconds: number };
+  ledger: { wallets: number; inconsistent: string[] };
 }
 
 let nextInstance = 0;
@@ -196,17 +197,35 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0;
 }
 
+/** Final invariant (§13): stored balance == ledger, with exactly one entry per applied transaction. */
+async function verifyLedgers(expectedEntries: Map<string, number>): Promise<ScenarioResult['ledger']> {
+  const inconsistent: string[] = [];
+  await runPool([...expectedEntries], CONCURRENCY, async ([walletId, entries]) => {
+    const response = await post(`/wallets/${walletId}/reconciliation`, {});
+    const body = (await response.json()) as { consistent: boolean; checkedEntries: number };
+    if (!body.consistent || body.checkedEntries !== entries) inconsistent.push(walletId);
+  });
+  return { wallets: expectedEntries.size, inconsistent };
+}
+
 async function runScenario(name: string, requests: WagerRequest[], concurrency = CONCURRENCY): Promise<ScenarioResult> {
+  // Every wallet starts with its OPENING entry; each 201 that moves the balance adds one.
+  const expectedEntries = new Map(requests.map((request) => [request.wallet.id, 1]));
   const before = await scrapeCounters();
   const sampler = sampleOutbox();
   const started = performance.now();
-  const samples = await runPool(requests, concurrency, (request) =>
-    timed(() => post('/wagering/transactions', request.body, request.headers)),
-  );
+  const samples = await runPool(requests, concurrency, async (request) => {
+    const sample = await timed(() => post('/wagering/transactions', request.body, request.headers));
+    if (sample.status === 201 && request.kind !== 'LOSS') {
+      expectedEntries.set(request.wallet.id, expectedEntries.get(request.wallet.id)! + 1);
+    }
+    return sample;
+  });
   const seconds = (performance.now() - started) / 1_000;
   const { maxLagSeconds, maxPending } = await sampler.stop();
   const drainSeconds = await waitOutboxDrained();
   const server = difference(await scrapeCounters(), before);
+  const ledger = await verifyLedgers(expectedEntries);
 
   const statuses: Record<string, number> = {};
   for (const sample of samples) statuses[sample.status] = (statuses[sample.status] ?? 0) + 1;
@@ -221,6 +240,7 @@ async function runScenario(name: string, requests: WagerRequest[], concurrency =
     latency: { p50: percentile(sorted, 50), p95: percentile(sorted, 95), p99: percentile(sorted, 99), max: sorted.at(-1) ?? 0 },
     server,
     outbox: { maxLagSeconds, maxPending, drainSeconds },
+    ledger,
   };
 }
 
@@ -277,12 +297,15 @@ function report(results: ScenarioResult[]): void {
         `${statuses} | ${((errors / result.requests) * 100).toFixed(2)}% |`,
     );
   }
-  console.log('\n| scenario | processed | rejected | replays | retries | lock conflicts | max outbox lag s | max outbox pending | outbox drain s |');
-  console.log('|---|---|---|---|---|---|---|---|---|');
-  for (const { name, server, outbox } of results) {
+  console.log(
+    '\n| scenario | processed | rejected | replays | retries | lock conflicts | max outbox lag s | max outbox pending | outbox drain s | balance == ledger |',
+  );
+  console.log('|---|---|---|---|---|---|---|---|---|---|');
+  for (const { name, server, outbox, ledger } of results) {
     console.log(
       `| ${name} | ${server.processed} | ${server.rejected} | ${server.duplicates} | ${server.retries} | ${server.lockConflicts} | ` +
-        `${outbox.maxLagSeconds.toFixed(2)} | ${outbox.maxPending} | ${outbox.drainSeconds.toFixed(2)} |`,
+        `${outbox.maxLagSeconds.toFixed(2)} | ${outbox.maxPending} | ${outbox.drainSeconds.toFixed(2)} | ` +
+        `${ledger.wallets - ledger.inconsistent.length}/${ledger.wallets} wallets |`,
     );
   }
   for (const { name, networkErrors } of results) {
@@ -295,3 +318,9 @@ const results = [await distinctWallets()];
 for (const concurrency of HOT_CONCURRENCY) results.push(await hotWallet(concurrency));
 results.push(await duplicateKeys());
 report(results);
+
+const inconsistent = results.flatMap((result) => result.ledger.inconsistent);
+if (inconsistent.length) {
+  console.error(`\nledger check FAILED for wallets: ${inconsistent.join(', ')}`);
+  process.exit(1);
+}
