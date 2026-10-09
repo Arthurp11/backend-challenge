@@ -1,9 +1,12 @@
+import { mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import type { Subprocess } from 'bun';
 import { TEST_ENV_DEFAULTS, testDatabaseUrl } from './test-database';
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../..');
+// temp/ is gitignored, so it does not exist in a fresh clone; spawning with a log file there would fail.
+const LOG_DIR = resolve(PROJECT_ROOT, 'temp');
 
 export interface Instance {
   url: string;
@@ -25,6 +28,7 @@ export async function spawnInstance(
   options: { waitUntilLive?: boolean } = {},
 ): Promise<Instance> {
   const port = await freePort();
+  mkdirSync(LOG_DIR, { recursive: true });
   const child = Bun.spawn(['bun', 'run', 'src/main.ts'], {
     cwd: PROJECT_ROOT,
     env: {
@@ -36,7 +40,7 @@ export async function spawnInstance(
       INSTANCE_ID: `test-instance-${port}`,
       ...env,
     },
-    stdout: Bun.file(resolve(PROJECT_ROOT, `temp/instance-${port}.log`)),
+    stdout: Bun.file(resolve(LOG_DIR, `instance-${port}.log`)),
     stderr: 'inherit',
   });
   const url = `http://127.0.0.1:${port}`;
