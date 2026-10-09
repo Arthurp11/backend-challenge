@@ -1,39 +1,14 @@
-import { CreateQueueCommand, GetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 import { loadEnv } from '../src/infrastructure/config/env';
+import { provisionQueues } from '../src/infrastructure/messaging/provision-queues';
 import { createSqsClient } from '../src/infrastructure/messaging/sqs-client';
 
-/**
- * Idempotent: CreateQueue with identical attributes returns the existing queue.
- * Content-based deduplication is OFF on purpose: producers always send an explicit
- * MessageDeduplicationId (messageId / eventId), and the database stays the real dedup guarantee.
- */
 const env = loadEnv();
 const sqs = createSqsClient(env);
+const names = { wagerQueue: env.SQS_WAGER_QUEUE, deadLetterQueue: env.SQS_WAGER_DLQ, eventsQueue: env.SQS_EVENTS_QUEUE };
 
-const fifo = {
-  FifoQueue: 'true',
-  ContentBasedDeduplication: 'false',
-  VisibilityTimeout: String(env.SQS_VISIBILITY_TIMEOUT_SECONDS),
-};
-
-async function createQueue(name: string, attributes: Record<string, string>): Promise<string> {
-  const { QueueUrl } = await sqs.send(new CreateQueueCommand({ QueueName: name, Attributes: attributes }));
-  if (!QueueUrl) throw new Error(`CreateQueue returned no URL for ${name}`);
-  console.log(`queue ready: ${name}`);
-  return QueueUrl;
-}
-
-const dlqUrl = await createQueue(env.SQS_WAGER_DLQ, fifo);
-const { Attributes } = await sqs.send(
-  new GetQueueAttributesCommand({ QueueUrl: dlqUrl, AttributeNames: ['QueueArn'] }),
-);
-const dlqArn = Attributes?.QueueArn;
-if (!dlqArn) throw new Error('DLQ has no QueueArn');
-
-await createQueue(env.SQS_WAGER_QUEUE, {
-  ...fifo,
-  RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: env.SQS_MAX_RECEIVE_COUNT }),
+await provisionQueues(sqs, names, {
+  maxReceiveCount: env.SQS_MAX_RECEIVE_COUNT,
+  visibilityTimeoutSeconds: env.SQS_VISIBILITY_TIMEOUT_SECONDS,
 });
-await createQueue(env.SQS_EVENTS_QUEUE, fifo);
-
+console.log(`queues ready: ${Object.values(names).join(', ')}`);
 sqs.destroy();

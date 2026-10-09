@@ -12,7 +12,9 @@
     "migration:status": "bun run scripts/migrate.ts status",
     "sqs:setup": "bun run scripts/setup-queues.ts",
     "test": "bun test test/unit",
-    "test:integration": "bun test test/integration test/concurrency --timeout 60000"
+    "test:integration": "bun test test/integration test/concurrency --timeout 120000",
+    "sqs:send": "bun run scripts/send-wager-message.ts",
+    "test:all": "bun test test/unit test/integration test/concurrency --timeout 120000"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1147.0",
