@@ -37,10 +37,6 @@ interface HttpResponse {
 export class HttpErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<HttpResponse>();
-    if (error instanceof HttpException) {
-      response.status(error.getStatus()).json(error.getResponse());
-      return;
-    }
     const { status, body } = toHttpError(error);
     if (status === 503) {
       response.setHeader('Retry-After', '1');
@@ -78,6 +74,15 @@ export function toHttpError(error: unknown): { status: number; body: ErrorBody }
   }
   if (error instanceof ApplicationError) {
     return { status: 400, body: body(error.code, error.message, false) };
+  }
+  // Raised before our code runs: by Nest (malformed JSON, unknown route) or by the body parser
+  // (body too large, unsupported charset or encoding). Same contract as every other error.
+  const frameworkStatus = error instanceof HttpException ? error.getStatus() : (error as { status?: unknown } | null)?.status;
+  if (typeof frameworkStatus === 'number' && frameworkStatus >= 400 && frameworkStatus < 500) {
+    const message = error instanceof Error ? error.message : 'invalid request';
+    if (frameworkStatus === 404) return { status: 404, body: body('NOT_FOUND', message, false) };
+    if (frameworkStatus === 413) return { status: 413, body: body('PAYLOAD_TOO_LARGE', message, false) };
+    return { status: 400, body: body('INVALID_REQUEST', message, false) };
   }
   // Unknown failure: retrying with the same Idempotency-Key is safe, it can never apply twice.
   return { status: 500, body: body('INTERNAL_ERROR', 'unexpected error', true) };

@@ -173,7 +173,7 @@ Formato de cada decisão: **contexto → decisão → alternativas descartadas �
 
 ### D12. Status HTTP
 
-O mesmo mapeamento vale em todos os endpoints. O provedor decide pelo status e pelo `code`, nunca lendo mensagens. O corpo de erro é sempre `{ code, message, retryable, issues? }`.
+O mesmo mapeamento vale em todos os endpoints. O provedor decide pelo status e pelo `code`, nunca lendo mensagens. O corpo de erro é sempre `{ code, message, retryable, issues? }`, inclusive nos erros gerados antes do nosso código (JSON malformado, rota inexistente, corpo grande demais). Caracteres de controle (como NUL) são entrada inválida (400): se chegassem ao Postgres, virariam um erro de protocolo parecido com queda de conexão, e o provedor tentaria de novo para sempre. A única exceção é o `/health/ready`, que em 503 devolve o próprio relatório (`{ status, checks }`).
 
 | Status | Quando | `code` |
 |---|---|---|
@@ -182,7 +182,8 @@ O mesmo mapeamento vale em todos os endpoints. O provedor decide pelo status e p
 | 202 | aceita, aguardando a referência (`PENDING_REFERENCE`) | — |
 | 422 | rejeição de negócio (`REJECTED`, ou `FAILED`), persistida e com `failureCode` | — |
 | 400 | payload, header ou parâmetro inválido | `INVALID_REQUEST`, `INVALID_MONEY`, `INVALID_WAGER_TRANSACTION`, `INVALID_CURSOR` |
-| 404 | wallet ou transação inexistente | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` |
+| 404 | wallet, transação ou rota inexistente | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `NOT_FOUND` |
+| 413 | corpo acima do limite (100 KB) | `PAYLOAD_TOO_LARGE` |
 | 409 | conflito | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_ID_CONFLICT`, `WALLET_ALREADY_EXISTS` |
 | 503 | falha transitória, com `Retry-After: 1`. Reenviar com a mesma key é seguro | `SERVICE_UNAVAILABLE` |
 | 500 | erro inesperado. Reenviar com a mesma key também é seguro | `INTERNAL_ERROR` |

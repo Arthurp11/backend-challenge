@@ -22,7 +22,15 @@ export function validate<T>(schema: z.ZodType<T>, value: unknown, what = 'body')
   return parsed.data;
 }
 
-const text = (max: number) => z.string().trim().min(1).max(max);
+// Control characters (e.g. NUL) are invalid input: PostgreSQL would reject them as a protocol error,
+// which looks like a transient connection failure and would be retried forever.
+export const text = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(max)
+    .regex(/^\P{Cc}*$/u, 'control characters are not allowed');
 /** Money arrives as { amount: string, currency: string }; Money.from rejects NaN, exponents, >2 decimals… */
 const money = z.strictObject({ amount: z.string(), currency: z.string() });
 

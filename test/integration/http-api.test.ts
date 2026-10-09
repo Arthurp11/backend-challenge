@@ -231,4 +231,39 @@ describe('HTTP API', () => {
       expect((await app.get(`/wagering/transactions/${uuid()}`)).status).toBe(404);
     });
   });
+
+  describe('error contract (D12): every error is { code, message, retryable }, never a bare 500', () => {
+    const raw = async (path: string, init: RequestInit = {}) => {
+      const response = await fetch(`${app.url}${path}`, { ...init, headers: { 'content-type': 'application/json', ...init.headers } });
+      return { status: response.status, body: (await response.json()) as { code: string; retryable: boolean } };
+    };
+
+    it('malformed JSON and an unknown route', async () => {
+      expect(await raw('/wallets', { method: 'POST', body: '{"playerId":' })).toMatchObject({
+        status: 400,
+        body: { code: 'INVALID_REQUEST', retryable: false },
+      });
+      expect(await raw('/nope')).toMatchObject({ status: 404, body: { code: 'NOT_FOUND', retryable: false } });
+    });
+
+    it('a body over the size limit is 413, not a retryable 500', async () => {
+      const body = JSON.stringify({ playerId: uuid(), padding: 'x'.repeat(200_000) });
+
+      expect(await raw('/wallets', { method: 'POST', body })).toMatchObject({
+        status: 413,
+        body: { code: 'PAYLOAD_TOO_LARGE', retryable: false },
+      });
+    });
+
+    it('control characters are invalid input (400), not a transient database failure (503)', async () => {
+      const wallet = await createWallet(app);
+      const bet = wagerRequest(wallet, { gameId: 'game\u0000one' });
+
+      const response = await submit(bet);
+
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ code: 'INVALID_REQUEST', retryable: false });
+      expect((await raw('/providers/a%00b/wagering/transactions/x')).status).toBe(400);
+    });
+  });
 });

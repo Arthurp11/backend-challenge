@@ -17,13 +17,13 @@ import { DomainError } from '../../domain/shared/domain-error';
 import type { QueueUrls } from '../../infrastructure/messaging/queue-urls';
 import { logger, withLogContext } from '../../infrastructure/observability/logger';
 import { metrics } from '../../infrastructure/observability/metrics';
-import { validate, wagerTransactionBody } from '../http/request-validation';
+import { text, validate, wagerTransactionBody } from '../http/request-validation';
 
 const envelopeSchema = z.object({
-  messageId: z.string().trim().min(1).max(200),
+  messageId: text(200),
   type: z.literal('WagerTransactionRequested'),
   occurredAt: z.string(),
-  data: wagerTransactionBody.extend({ idempotencyKey: z.string().trim().min(1).max(255) }),
+  data: wagerTransactionBody.extend({ idempotencyKey: text(255) }),
 });
 
 export interface WagerQueueConsumerOptions {

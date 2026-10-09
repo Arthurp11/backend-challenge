@@ -1,6 +1,6 @@
 import { GetQueueUrlCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import { MikroORM } from '@mikro-orm/core';
-import { Controller, Get, Inject, ServiceUnavailableException } from '@nestjs/common';
+import { Controller, Get, Inject, Res } from '@nestjs/common';
 import type { Env } from '../../infrastructure/config/env';
 import { ENV, SQS_CLIENT } from '../../infrastructure/tokens';
 
@@ -25,11 +25,13 @@ export class HealthController {
 
   /** Readiness: this instance can do useful work (PostgreSQL and SQS reachable). */
   @Get('ready')
-  async ready() {
+  async ready(@Res({ passthrough: true }) response: { status(code: number): unknown }) {
     const [database, queue] = await Promise.all([this.checkDatabase(), this.checkQueue()]);
     const checks = { database, queue };
     if (database === 'down' || queue === 'down') {
-      throw new ServiceUnavailableException({ status: 'unavailable', checks });
+      // A health report, not an error: it keeps its own body instead of the error contract.
+      response.status(503);
+      return { status: 'unavailable', checks };
     }
     return { status: 'ok', checks };
   }
